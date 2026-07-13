@@ -1,0 +1,101 @@
+.wrapper {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 2px 0;
+}
+.wrapper.user { flex-direction: row-reverse; }
+
+.avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), #a78bfa);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+.userAvatar {
+  background: linear-gradient(135deg, #22c55e, #15803d);
+}
+
+.bubble {
+  max-width: 80%;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  position: relative;
+}
+.userBubble {
+  background: linear-gradient(135deg, rgba(108, 99, 255, 0.25), rgba(167, 139, 250, 0.15));
+  border: 1px solid rgba(108, 99, 255, 0.35);
+  border-top-right-radius: 4px;
+}
+.assistantBubble {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-top-left-radius: 4px;
+}
+
+.text {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.markdown {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+.markdown p { margin-bottom: 0.5rem; }
+.markdown p:last-child { margin-bottom: 0; }
+.markdown strong { color: var(--accent-light); font-weight: 600; }
+.markdown code {
+  background: var(--surface-3);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: #a78bfa;
+}
+.markdown pre {
+  background: var(--surface-3);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 0.8rem;
+}
+.markdown th {
+  background: var(--surface-3);
+  padding: 6px 10px;
+  text-align: left;
+  color: var(--text-secondary);
+  font-weight: 600;
+  border: 1px solid var(--border);
+}
+.markdown td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+}
+.markdown ul, .markdown ol {
+  padding-left: 1.2rem;
+  margin: 4px 0;
+}
+.markdown li { margin: 2px 0; }
+
+.time {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-top: 6px;
+  text-align: right;
+}

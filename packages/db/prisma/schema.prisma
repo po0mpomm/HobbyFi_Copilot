@@ -1,0 +1,379 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -----------------------------------------------------------------------------
+// Play Track (Courts, Slots, Bookings)
+// -----------------------------------------------------------------------------
+
+model vendors {
+  vendor_id         String   @id @default(uuid())
+  business_name     String
+  track             String   // play | pass | community
+  category          String   // sports_court | fitness_studio | academy | coach
+  contact_email     String
+  phone             String
+  onboarding_status String   // verification | select_track | launch | live
+  
+  // KYC fields - These are present in DB but should be excluded from Copilot's queries
+  pan_number        String?
+  bank_account      Json?
+  gst_number        String?
+
+  created_at        DateTime @default(now())
+
+  venues            venues[]
+  staff_coaches     staff_coaches[]
+  transactions      transactions[]
+  mrr_snapshots     mrr_snapshots[]
+  payouts           payouts[]
+  communities       communities[]
+  audit_logs        copilot_audit_log[]
+}
+
+model venues {
+  venue_id       String   @id @default(uuid())
+  vendor_id      String
+  name           String
+  city           String
+  address        String
+  sports_offered String[]
+  amenities      String[]
+
+  vendor         vendors  @relation(fields: [vendor_id], references: [vendor_id])
+
+  courts_or_slots  courts_or_slots[]
+  bookings         bookings[]
+  membership_plans membership_plans[]
+  memberships      memberships[]
+  trials           trials[]
+  waivers          waivers[]
+  staff_coaches    staff_coaches[]
+  checkins         checkins[]
+  transactions     transactions[]
+  mrr_snapshots    mrr_snapshots[]
+  payouts          payouts[]
+}
+
+model courts_or_slots {
+  slot_id                String   @id @default(uuid())
+  venue_id               String
+  sport                  String
+  capacity               Int
+  price_per_hour         Float
+  is_active              Boolean  @default(true)
+  seasonal_pricing_rules Json?
+  rain_block             Boolean  @default(false)
+
+  venue                  venues   @relation(fields: [venue_id], references: [venue_id])
+  bookings               bookings[]
+}
+
+model bookings {
+  booking_id         String   @id @default(uuid())
+  slot_id            String
+  venue_id           String
+  sport              String
+  booked_by_user_id  String
+  booking_date       DateTime @db.Date
+  start_time         DateTime @db.Time
+  end_time           DateTime @db.Time
+  status             String   // confirmed | cancelled | completed | no_show
+  total_amount       Float
+  split_type         String   // solo | join_a_game
+  created_at         DateTime @default(now())
+
+  slot               courts_or_slots @relation(fields: [slot_id], references: [slot_id])
+  venue              venues          @relation(fields: [venue_id], references: [venue_id])
+  user               users           @relation(fields: [booked_by_user_id], references: [user_id])
+  
+  participants       booking_participants[]
+}
+
+model booking_participants {
+  participant_id     String   @id @default(uuid())
+  booking_id         String
+  user_id            String
+  amount_owed        Float
+  payment_status     String   // paid | pending
+
+  booking            bookings @relation(fields: [booking_id], references: [booking_id])
+  user               users    @relation(fields: [user_id], references: [user_id])
+}
+
+model payouts {
+  payout_id           String   @id @default(uuid())
+  vendor_id           String
+  venue_id            String
+  period_start        DateTime
+  period_end          DateTime
+  gross_amount        Float
+  commission_deducted Float
+  net_amount          Float
+  status              String   // pending | settled
+  settled_at          DateTime?
+
+  vendor              vendors @relation(fields: [vendor_id], references: [vendor_id])
+  venue               venues  @relation(fields: [venue_id], references: [venue_id])
+}
+
+// -----------------------------------------------------------------------------
+// Pass Track (Memberships, Trials, CRM)
+// -----------------------------------------------------------------------------
+
+model membership_plans {
+  plan_id              String   @id @default(uuid())
+  venue_id             String
+  sport                String
+  plan_name            String   // e.g. "Monthly Gold", "10-Class Pass", "Weekend Club"
+  duration_days        Int?
+  class_count          Int?
+  price                Float
+  trial_available      Boolean  @default(false)
+  trial_duration_days  Int?
+
+  venue                venues   @relation(fields: [venue_id], references: [venue_id])
+  memberships          memberships[]
+  trials               trials[]
+}
+
+model memberships {
+  membership_id         String   @id @default(uuid())
+  plan_id               String
+  user_id               String
+  venue_id              String
+  start_date            DateTime @db.Date
+  end_date              DateTime @db.Date
+  status                String   // active | expired | cancelled
+  is_trial              Boolean  @default(false)
+  converted_from_trial  Boolean  @default(false)
+  payment_mode          String   // auto_paid | manual
+  display_status        String   // Auto-Paid | Trial Active | Expired
+
+  plan                  membership_plans @relation(fields: [plan_id], references: [plan_id])
+  user                  users            @relation(fields: [user_id], references: [user_id])
+  venue                 venues           @relation(fields: [venue_id], references: [venue_id])
+  waivers               waivers[]
+}
+
+model trials {
+  trial_id           String   @id @default(uuid())
+  plan_id            String
+  user_id            String
+  venue_id           String
+  sport              String
+  start_date         DateTime @db.Date
+  end_date           DateTime @db.Date
+  status             String   // active | expired | converted | no_show
+
+  plan               membership_plans @relation(fields: [plan_id], references: [plan_id])
+  user               users            @relation(fields: [user_id], references: [user_id])
+  venue              venues           @relation(fields: [venue_id], references: [venue_id])
+}
+
+model waivers {
+  waiver_id          String   @id @default(uuid())
+  user_id            String
+  venue_id           String
+  membership_id      String
+  signed_at          DateTime @default(now())
+  document_url       String
+
+  user               users       @relation(fields: [user_id], references: [user_id])
+  venue              venues      @relation(fields: [venue_id], references: [venue_id])
+  membership         memberships @relation(fields: [membership_id], references: [membership_id])
+}
+
+model staff_coaches {
+  staff_id           String   @id @default(uuid())
+  vendor_id          String
+  venue_id           String
+  name               String
+  role               String   // coach | front_desk | manager
+  commission_rate    Float?
+  assigned_classes   String[]
+
+  vendor             vendors @relation(fields: [vendor_id], references: [vendor_id])
+  venue              venues  @relation(fields: [venue_id], references: [venue_id])
+}
+
+model checkins {
+  checkin_id         String   @id @default(uuid())
+  user_id            String
+  venue_id           String
+  booking_id         String?
+  membership_id      String?
+  checkin_time       DateTime @default(now())
+  method             String   // qr | manual
+
+  user               users  @relation(fields: [user_id], references: [user_id])
+  venue              venues @relation(fields: [venue_id], references: [venue_id])
+}
+
+model transactions {
+  transaction_id        String   @id @default(uuid())
+  vendor_id             String
+  venue_id              String
+  related_booking_id    String?
+  related_membership_id String?
+  amount                Float
+  payment_gateway       String   // razorpay | payu
+  status                String   // success | failed | refunded
+  gst_invoice_id        String?
+  created_at            DateTime @default(now())
+
+  vendor                vendors @relation(fields: [vendor_id], references: [vendor_id])
+  venue                 venues  @relation(fields: [venue_id], references: [venue_id])
+}
+
+model mrr_snapshots {
+  snapshot_id           String   @id @default(uuid())
+  vendor_id             String
+  venue_id              String
+  date                  DateTime @db.Date
+  mrr_amount            Float
+  active_members_count  Int
+
+  vendor                vendors @relation(fields: [vendor_id], references: [vendor_id])
+  venue                 venues  @relation(fields: [venue_id], references: [venue_id])
+}
+
+// -----------------------------------------------------------------------------
+// Shared / Users
+// -----------------------------------------------------------------------------
+
+model users {
+  user_id            String   @id @default(uuid())
+  name               String
+  phone              String
+  email              String
+  city               String
+  hobbies            String[]
+  joined_at          DateTime @default(now())
+
+  bookings             bookings[]
+  booking_participants booking_participants[]
+  memberships          memberships[]
+  trials               trials[]
+  waivers              waivers[]
+  checkins             checkins[]
+  community_members    community_members[]
+  event_registrations  event_registrations[]
+  community_memberships community_memberships[]
+}
+
+// -----------------------------------------------------------------------------
+// Community Track (Coming Soon)
+// -----------------------------------------------------------------------------
+
+model communities {
+  community_id          String   @id @default(uuid())
+  vendor_id             String
+  name                  String
+  description           String
+  join_type             String   // instant | approval_required
+  is_free_to_join       Boolean  @default(true)
+  verification_status   String   // verified | pending
+  member_count          Int      @default(0)
+  created_at            DateTime @default(now())
+
+  vendor                vendors @relation(fields: [vendor_id], references: [vendor_id])
+  members               community_members[]
+  memberships           community_memberships[]
+  events                community_events[]
+  reports               moderation_reports[]
+}
+
+model community_members {
+  member_id          String   @id @default(uuid())
+  community_id       String
+  user_id            String
+  status             String   // active | pending_approval | removed | banned
+  joined_at          DateTime @default(now())
+  removed_reason     String?
+
+  community          communities @relation(fields: [community_id], references: [community_id])
+  user               users       @relation(fields: [user_id], references: [user_id])
+}
+
+model community_memberships {
+  membership_id      String   @id @default(uuid())
+  community_id       String
+  user_id            String
+  plan_name          String
+  billing_cycle      String   // monthly | yearly
+  price              Float
+  status             String   // active | expired | cancelled
+  start_date         DateTime @db.Date
+  end_date           DateTime @db.Date
+
+  community          communities @relation(fields: [community_id], references: [community_id])
+  user               users       @relation(fields: [user_id], references: [user_id])
+}
+
+model community_events {
+  event_id            String   @id @default(uuid())
+  community_id        String
+  title               String
+  type                String   // game | session | workshop
+  price               Float?
+  start_time          DateTime
+  capacity            Int
+  cancellation_policy String
+  status              String   // upcoming | completed | cancelled
+
+  community           communities @relation(fields: [community_id], references: [community_id])
+  registrations       event_registrations[]
+}
+
+model event_registrations {
+  registration_id    String   @id @default(uuid())
+  event_id           String
+  user_id            String
+  payment_status     String   // paid | free | refunded
+  registered_at      DateTime @default(now())
+
+  event              community_events @relation(fields: [event_id], references: [event_id])
+  user               users            @relation(fields: [user_id], references: [user_id])
+}
+
+model moderation_reports {
+  report_id             String   @id @default(uuid())
+  community_id          String
+  reported_by_user_id   String
+  target_type           String   // post | profile | member
+  target_id             String
+  reason                String
+  status                String   // open | reviewed | actioned
+  created_at            DateTime @default(now())
+
+  community             communities @relation(fields: [community_id], references: [community_id])
+}
+
+// -----------------------------------------------------------------------------
+// Copilot Audit Log
+// -----------------------------------------------------------------------------
+
+model copilot_audit_log {
+  log_id                      String   @id @default(uuid())
+  vendor_id                   String
+  staff_user_id               String
+  conversation_id             String
+  request_text                String
+  resolved_action_type        String   // e.g. extend_trial, mark_no_show
+  target_entity_type          String
+  target_entity_id            String
+  proposed_diff               Json
+  requires_extra_confirmation Boolean  @default(false)
+  status                      String   // proposed | approved | edited | rejected | executed | failed
+  approved_by                 String?
+  executed_at                 DateTime?
+  created_at                  DateTime @default(now())
+
+  vendor                      vendors  @relation(fields: [vendor_id], references: [vendor_id])
+}

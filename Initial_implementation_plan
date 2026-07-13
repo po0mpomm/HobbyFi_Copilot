@@ -1,0 +1,347 @@
+# HobbyFi Copilot — Implementation Plan (Updated)
+
+> **Surface:** `partner.hobbyfi.in` (Vendor Portal)  
+> **Phase:** 1 (MVP) — Play + Pass track reads & approval-gated writes  
+> **Core AI Framework:** [Mastra](https://mastra.ai) (TypeScript-native, production-ready)  
+> **LLM:** Google Gemini 2.0 Flash via Mastra's unified model router (Free Tier)  
+> **Companion docs:** [PRD](file:///c:/Users/anvay/Desktop/HobbyFi_Copilot/HobbyFi_Copilot_PRD.md) · [TRD](file:///c:/Users/anvay/Desktop/HobbyFi_Copilot/HobbyFi_Copilot_TRD.md)
+
+---
+
+## 1. Architecture Overview
+
+### System Layers
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                  Vendor Portal (Next.js)                          │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │  Copilot Chat Panel                                        │    │
+│  │  ChatMessage · DiffCard (Approve/Edit/Reject) · Input      │    │
+│  └──────────────────────┬───────────────────────────────────┘    │
+└─────────────────────────┼────────────────────────────────────────┘
+                          │ HTTPS + SSE streaming
+                          ▼
+┌──────────────────────────────────────────────────────────────────┐
+│              Copilot Gateway / BFF  (Next.js API Routes)          │
+│  • Validates portal session (JWT/cookie)                          │
+│  • Injects SessionContext: vendor_id, venue_ids, role, tracks     │
+│  • Rate limiting per vendor_id                                    │
+│  • Structured request/response logging                            │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+              ┌────────────┴────────────┐
+              │                         │
+              ▼                         ▼
+┌─────────────────────┐    ┌──────────────────────────────────────┐
+│   Mastra Agent      │    │   Copilot Audit Service               │
+│  ─────────────────  │◄──►│   • createAuditEntry (proposed)       │
+│  • System prompt    │    │   • approveAuditEntry                 │
+│    (server-built,   │    │   • rejectAuditEntry                  │
+│    track-aware)     │    │   • markExecuted / markFailed         │
+│  • Tool registry    │    │   • Append-only (never mutates diff)  │
+│    (filtered by     │    └───────────────────┬──────────────────┘
+│    active_tracks)   │                        │
+│  • Mastra Memory    │              ┌──────────┘
+│    (thread + res.)  │              ▼
+│  • Input/Output     │    ┌────────────────────────────┐
+│    Guardrail procs. │    │  PostgreSQL                 │
+│  • Suspend/Resume   │    │  copilot_audit_log          │
+│    workflow (HITL)  │    │  + all mock data tables     │
+└──────────┬──────────┘    └────────────────────────────┘
+           │ Tool calls
+           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                      Tool Layer                                   │
+│  ┌─────────────────────────┐  ┌──────────────────────────────┐  │
+│  │ Read Tools (Mastra      │  │ Write Tools (Mastra createTool│  │
+│  │ createTool, Zod schemas)│  │ + requireApproval: true)      │  │
+│  │ get_revenue             │  │ propose_trial_extension       │  │
+│  │ list_bookings           │  │ propose_membership_date_update│  │
+│  │ get_occupancy           │  │ propose_no_show_mark          │  │
+│  │ get_payout_summary      │  │ propose_booking_cancellation  │  │
+│  │ get_mrr_snapshot        │  │ execute_action (gated)        │  │
+│  │ list_memberships        │  └──────────────────────────────┘  │
+│  │ list_trials             │                                     │
+│  │ get_coach_schedule      │  Every tool: server-injects         │
+│  │ find_user               │  session_vendor_id, ignores         │
+│  └─────────────────────────┘  model-supplied vendor context      │
+└──────────────────────────────────────────────────────────────────┘
+           │ reads                    │ writes (on Approve)
+           ▼                          ▼
+┌─────────────────┐        ┌──────────────────────────────────────┐
+│ PostgreSQL      │        │ Existing / Stub Portal Services       │
+│ Read replicas / │        │ booking-svc · membership-svc          │
+│ analytics store │        │ payout-svc · notification-svc         │
+└─────────────────┘        └──────────────────────────────────────┘
+           
+           ┌────────────────────────────────┐
+           │ Redis                           │
+           │ Mastra Memory thread store      │
+           │ In-flight proposed diffs        │
+           │ Conversation history cache      │
+           └────────────────────────────────┘
+
+           ┌────────────────────────────────┐
+           │ Google Gemini 2.0 Flash         │
+           │ via Mastra model router         │
+           │ Tool-use / function calling     │
+           └────────────────────────────────┘
+```
+
+### Request Flow (Read)
+1. Vendor types a question → Portal sends `POST /copilot/messages`
+2. Gateway validates session → injects `SessionContext`
+3. Mastra Agent builds system prompt (track-aware) + loads memory
+4. Gemini calls a read tool → Tool layer queries PostgreSQL (scoped to `vendor_id`)
+5. Result returned to Gemini → composes natural language answer + deep link
+6. Response streams back to chat panel
+
+### Request Flow (Write — Approval-Gated)
+1. Vendor sends write request → Gateway injects `SessionContext`
+2. Mastra Agent resolves entity via read tool (e.g., `find_user`) → asks clarifying question if ambiguous
+3. Gemini calls a write tool (`requireApproval: true`) → Mastra **suspends** the workflow
+4. Write tool returns `ProposedDiff` (never commits) → Audit entry created (`status=proposed`)
+5. `DiffCard` rendered in UI with Approve / Edit / Reject
+6. Vendor approves → `POST /copilot/actions/:id/approve` → **Mastra resumes** workflow
+7. `execute_action` re-validates diff → calls stub portal service → `status=executed`
+8. Confirmation streamed back to chat
+
+---
+
+## 2. Tools & Frameworks
+
+| Concern | Choice | Rationale |
+|---|---|---|
+| **AI Agent Orchestration** | **Mastra** (TypeScript-native) | Already in use; batteries-included: agent loop, tool calling, memory, HITL suspend/resume, guardrail processors, observability, Mastra Studio local UI |
+| **LLM** | **Google Gemini 2.0 Flash** | Best free-tier LLM with robust tool-use/function calling support and a massive 1M context window. Perfect for Mastra workflows. |
+| **Tool Schema Validation** | **Zod** (via Mastra `createTool`) | Compile-time + runtime type safety on all tool inputs/outputs; enforces ProposedDiff shape |
+| **Frontend** | **Next.js 14** (App Router) | Existing vendor portal stack; API routes serve as the BFF/Gateway layer; SSE streaming built-in |
+| **Styling** | **Vanilla CSS** (CSS Modules + global variables) | Maximum control; glassmorphism, dark-mode tokens, micro-animations |
+| **Database** | **PostgreSQL** | Relational integrity for audit log + mock schema; Mastra's memory adapter is PostgreSQL-native |
+| **ORM** | **Prisma** | Type-safe query builder; model-level KYC column exclusion via select views |
+| **Session / Cache** | **Redis** (via Mastra memory storage + Upstash adapter) | Mastra thread store for conversation history; in-flight diff storage; fast per-vendor rate-limit counters |
+| **Package Manager / Monorepo** | **pnpm + Turborepo** | Fast installs; workspace-aware build pipeline |
+| **Testing** | **Vitest** (unit/integration) + **Playwright** (E2E) | Fast TS-native test runner; Playwright for full chat panel flows |
+| **Observability** | **Mastra built-in tracing + OpenTelemetry** | Per-turn traces, tool latency, token cost; ships with Mastra out of the box |
+
+---
+
+## 3. Memory Strategy
+
+Mastra provides four memory layers. We use all four, scoped to HobbyFi's needs:
+
+### Memory Scoping Rules (HobbyFi specific)
+
+| What | Scope | Storage | Retention |
+|---|---|---|---|
+| Conversation turns | `thread_id = conversation_id` | PostgreSQL | Session lifetime + 30 days |
+| Working Memory (vendor context) | `resource_id = vendor_id` | PostgreSQL / Upstash | Until vendor clears or changes tracks |
+| In-flight proposed diffs | `thread_id` | Redis (TTL 1hr) + PostgreSQL audit log | Redis: 1hr; Audit log: indefinite |
+| Semantic Recall embeddings | `resource_id = vendor_id` | PostgreSQL pgvector | Indefinite (Phase 2 full rollout) |
+
+---
+
+## 4. Guardrails Framework
+
+Guardrails are implemented at **three distinct layers** — any one layer catching a violation is sufficient; no single point of failure.
+
+### Layer 1 — Mastra Input/Output Processors (Model-level)
+
+```typescript
+// Applied to every agent turn BEFORE the LLM sees the message
+inputProcessors: [
+  new PromptInjectionDetector(),     // Blocks jailbreak / manipulation attempts
+  new ModerationInputProcessor(),    // Filters hate speech, harassment
+  new PIIDetector({                  // Detects & redacts PII in vendor's own input
+    redact: false,                   // Log only — don't block (vendor is asking about their own users)
+    alert: true                      // Alert if bulk PII dump detected
+  }),
+  new VendorScopeValidator({         // Custom: rejects if message pattern attempts cross-vendor query
+    session: sessionContext
+  })
+]
+
+// Applied to EVERY agent response BEFORE it reaches the vendor
+outputProcessors: [
+  new KYCFieldScrubber(),            // Strips any pan_number / bank_account / gst_number
+                                     // from output — defense-in-depth even if tool layer leaks
+  new BulkPIIDumper()                // Alerts if response contains >10 user contact records
+]
+```
+
+### Layer 2 — Tool Layer (Primary Enforcement)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  Tool Layer Guardrails                       │
+│                                                              │
+│  ① Track-aware Registry Filter                               │
+│     getToolsForSession(session) → only returns tools for     │
+│     active_tracks; Play-only = no MRR/trial/membership tools │
+│     in the tools[] array at all — model can't call them      │
+│                                                              │
+│  ② Server-side vendor_id Injection                          │
+│     Every tool receives session_vendor_id from the           │
+│     authenticated session (NOT from the model's arguments)   │
+│     Model-supplied vendor IDs are ignored/overridden         │
+│                                                              │
+│  ③ Record Ownership Validation                              │
+│     Every tool validates that the target record ID           │
+│     (trial_id, booking_id, etc.) belongs to session vendor   │
+│     before any read or write proceeds                        │
+│                                                              │
+│  ④ KYC Column Exclusion at ORM Layer                        │
+│     Prisma vendorSafe() query helper never SELECTs           │
+│     pan_number, bank_account.*, gst_number                   │
+│     These columns don't appear in any tool's return schema   │
+│                                                              │
+│  ⑤ requireApproval: true on all write tools                 │
+│     Mastra tool definition flag — triggers automatic         │
+│     workflow suspension before any write executes            │
+│                                                              │
+│  ⑥ Stale Diff Re-validation                                 │
+│     execute_action re-fetches current DB state before        │
+│     calling portal service — if diff is stale, re-proposes  │
+│     rather than silently executing on wrong data             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Layer 3 — Audit & Observability (Detection + Alerting)
+
+| Signal | Alert condition | Treated as |
+|---|---|---|
+| Cross-vendor scope rejection at tool layer | Spike (>5/min per vendor) | Security alert (possible registry/session bug) |
+| `execute_action` called on non-`approved` status | Any occurrence | Critical error + page |
+| `failed` executions | Spike | Ops alert |
+| KYC field appearing in any tool output | Any occurrence | Critical security alert |
+| Notification tool send volume | Above threshold | `requires_extra_confirmation=true` + alert |
+
+---
+
+## 5. Workflow Orchestration
+
+### Orchestration Engine: Mastra Workflows
+
+Mastra's graph-based workflow engine (`.then()`, `.branch()`, `.parallel()`, `.suspend()`, `.resume()`) replaces a hand-rolled orchestration loop. Both the read and write flows are modeled as Mastra workflows.
+
+### Read Workflow
+
+```
+mastra.createWorkflow("copilot-read")
+  .step("load-session-memory")        // Fetches conversation history + working memory
+  .step("build-system-prompt")        // Track-aware prompt construction
+  .step("run-agent")                  // Gemini + tool-calling loop (may call multiple tools)
+  .step("format-response")            // Compose answer + deep-link URL
+  .step("persist-turn")               // Save turn to thread store
+  .step("stream-to-client")
+```
+
+### Write Workflow (Approval-Gated with Suspend/Resume)
+
+```
+mastra.createWorkflow("copilot-write")
+  .step("load-session-memory")
+  .step("resolve-entity")             // find_user / validate record ownership
+  .branch({
+    "ambiguous": .step("ask-clarifying-question").suspend("awaiting-clarification"),
+    "resolved":  .step("build-diff")  // Call write tool → returns ProposedDiff
+  })
+  .step("create-audit-entry")         // INSERT copilot_audit_log status=proposed
+  .step("render-diff-card")           // Stream DiffCard to frontend
+  .suspend("awaiting-approval")       // ← Mastra SUSPENDS here; state saved to PostgreSQL
+                                      //   Workflow can be resumed days later if needed
+
+  // ── Vendor taps Approve / Edit / Reject in UI ──────────────────────────
+  // Resume triggered by POST /copilot/actions/:id/approve or /reject
+
+  .branch({
+    "rejected": .step("mark-rejected").step("notify-vendor"),
+    "approved": .step("re-validate-diff")   // Stale diff check
+      .branch({
+        "stale":   .step("re-propose"),     // Re-suspend for new approval
+        "fresh":   .step("execute-action")  // Call portal service stub
+          .step("mark-executed")            // UPDATE audit log status=executed
+          .step("stream-confirmation")
+      })
+  })
+```
+
+---
+
+## Proposed Project Structure
+
+```
+HobbyFi_Copilot/
+├── apps/
+│   ├── portal/                    # Next.js 14 — vendor portal + Copilot UI
+│   │   ├── src/
+│   │   │   ├── app/               # App Router routes
+│   │   │   │   ├── api/copilot/   # BFF/Gateway routes (Next.js API routes)
+│   │   │   │   └── dashboard/     # Vendor dashboard layout + Copilot panel
+│   │   │   ├── components/
+│   │   │   │   └── copilot/       # CopilotPanel, ChatMessage, DiffCard, etc.
+│   │   │   ├── hooks/             # useCopilot.ts
+│   │   │   ├── context/           # AuthContext (mock)
+│   │   │   └── styles/            # globals.css, CSS modules
+│   │   └── e2e/                   # Playwright E2E tests
+│   │
+│   └── mastra/                    # Mastra project (agent, tools, workflows, memory)
+│       ├── src/
+│       │   ├── agents/
+│       │   │   └── copilot.agent.ts        # Mastra agent definition (uses Gemini)
+│       │   ├── tools/
+│       │   │   ├── read/                   # Read tool definitions (createTool + Zod)
+│       │   │   └── write/                  # Write tool definitions (requireApproval:true)
+│       │   ├── workflows/
+│       │   │   ├── read.workflow.ts        # Read Q&A workflow
+│       │   │   └── write.workflow.ts       # Approval-gated write workflow
+│       │   ├── memory/
+│       │   │   └── memory.config.ts        # Mastra Memory setup (PG adapter + working memory)
+│       │   ├── guardrails/
+│       │   │   ├── input-processors.ts     # PromptInjectionDetector, VendorScopeValidator, PIIDetector
+│       │   │   └── output-processors.ts    # KYCFieldScrubber, BulkPIIDumper
+│       │   ├── registry/
+│       │   │   └── tool-registry.ts        # getToolsForSession (track-aware filter)
+│       │   ├── audit/
+│       │   │   └── audit.service.ts        # Audit log CRUD
+│       │   └── prompts/
+│       │       └── system.prompt.ts        # Server-assembled system prompt builder
+│       └── mastra.config.ts               # Mastra root config
+│
+├── packages/
+│   └── db/                        # Prisma schema, migrations, seed
+│       ├── prisma/
+│       │   ├── schema.prisma
+│       │   └── migrations/
+│       ├── seed.ts
+│       └── client.ts              # vendorSafe() query helper (KYC columns excluded)
+│
+├── docker-compose.yml             # PostgreSQL (pgvector) + Redis
+├── .env.example
+├── turbo.json
+└── pnpm-workspace.yaml
+```
+
+---
+
+## User Review Required
+
+> [!IMPORTANT]
+> **Mastra server deployment** — Mastra's workflow engine requires a persistent process (Node.js server) to handle suspend/resume state. The `apps/mastra` package will run as a standalone Express/Fastify server. Next.js API routes in `apps/portal` act as the BFF/Gateway and proxy to the Mastra server. Confirm this split is acceptable, or if you'd prefer everything in a single Next.js process.
+
+> [!IMPORTANT]
+> **PostgreSQL pgvector for semantic recall** — Semantic recall (Layer 3 memory) requires the `pgvector` extension on your PostgreSQL instance. This is available on Supabase, Neon, Railway, and self-hosted PG 15+. Confirm your DB hosting supports pgvector, or we can skip semantic recall for Phase 1 and enable it in Phase 2.
+
+> [!WARNING]
+> **Mock portal services** — `execute_action` will call stub implementations of the booking/membership services in Phase 1. Real integration with HobbyFi's production services needs to happen before go-live. We need the internal API specs for: trial extension, membership date update, no-show mark, booking cancellation.
+
+---
+
+## Phasing
+
+| Phase | Scope |
+|---|---|
+| **Phase 1 (this plan)** | Read Q&A (Play + Pass) + 4 core writes + Mastra approval workflow + audit log + track-aware registry + memory (layers 1+2) + guardrail processors + Gemini Flash |
+| Phase 2 | Additional writes (reschedule, add slots, coach reassignment), semantic recall (layer 3), conversation history search, multi-venue rollups |
+| Phase 3 | Proactive nudges (Mastra-scheduled suggestion surface), Community track tool registry |
