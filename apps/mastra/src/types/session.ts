@@ -7,6 +7,10 @@ export interface SessionContext {
   role: 'owner' | 'manager' | 'staff';
   active_tracks: ('play' | 'pass' | 'community')[];
   venue_ids: string[];
+  // Populated per-request in the /api/chat handler so write tools can
+  // call createAuditEntry() directly without routing data through the LLM.
+  request_text: string;
+  thread_id?: string;
 }
 
 export interface ProposedDiff {

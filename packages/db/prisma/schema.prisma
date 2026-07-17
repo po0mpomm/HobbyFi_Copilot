@@ -377,3 +377,13 @@ model copilot_audit_log {
 
   vendor                      vendors  @relation(fields: [vendor_id], references: [vendor_id])
 }
+
+model copilot_chat_memory {
+  id         String   @id @default(uuid())
+  thread_id  String
+  role       String   // 'user' or 'assistant'
+  content    String
+  created_at DateTime @default(now())
+
+  @@index([thread_id])
+}

@@ -8,8 +8,8 @@ import { DiffCard } from './DiffCard';
 import styles from './CopilotChat.module.css';
 
 export function CopilotChat() {
-  const { vendorId, vendorName, track } = useAuth();
-  const { messages, pendingDiffs, isLoading, sendMessage, approve, reject, clearMessages } = useCopilot(vendorId);
+  const { vendorId, vendorName, track, staffId } = useAuth();
+  const { messages, pendingDiffs, isLoading, sendMessage, approve, reject, clearMessages } = useCopilot(vendorId, staffId);
   const [input, setInput] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
 

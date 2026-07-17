@@ -1,8 +1,9 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { google } from '@ai-sdk/google';
-import { createAgent } from '@mastra/core';
+import { Agent } from '@mastra/core/agent';
+import { Memory } from '@mastra/memory';
+import { createGroq } from '@ai-sdk/groq';
 import { processInput, processOutput } from './guardrails/processors';
 import { getToolsForSession } from './registry/toolRegistry';
 import {
@@ -18,11 +19,16 @@ import { executeApprovedDiff } from './audit/portalService';
 import type { SessionContext } from './types/session';
 import { prisma } from 'db';
 
-dotenv.config();
+dotenv.config(); // loads apps/mastra/.env
+dotenv.config({ path: '../../.env', override: false }); // fallback to repo root
 
 const app = express();
 app.use(cors({ origin: process.env.PORTAL_ORIGIN || 'http://localhost:3000' }));
 app.use(express.json());
+
+// Conversation memory is now stored in PostgreSQL
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Auth / Session Middleware
@@ -58,6 +64,9 @@ async function sessionMiddleware(req: Request, res: Response, next: NextFunction
     role: 'owner',
     active_tracks: [vendor.track as 'play' | 'pass' | 'community'],
     venue_ids: venues.map(v => v.venue_id),
+    // Populated per-request below — safe defaults until overwritten in the chat handler
+    request_text: '',
+    thread_id: undefined,
   };
 
   (req as Request & { session: SessionContext }).session = session;
@@ -75,6 +84,10 @@ app.post('/api/chat', sessionMiddleware, async (req: Request, res: Response) => 
     return res.status(400).json({ error: 'Message is required' });
   }
 
+  // Inject per-request context so write tools can call createAuditEntry directly
+  session.request_text = message;
+  session.thread_id = thread_id;
+
   // Layer 1: Input guardrails
   const inputCheck = processInput(message);
   if (inputCheck.blocked) {
@@ -85,15 +98,15 @@ app.post('/api/chat', sessionMiddleware, async (req: Request, res: Response) => 
   const systemPrompt = `You are the HobbyFi Copilot, an AI assistant for sports and fitness vendors.
 
 VENDOR CONTEXT (DO NOT SHARE WITH USER):
-- Vendor ID: ${session.vendor_id}
+- Current Date/Time: ${new Date().toISOString()}
 - Active Tracks: ${session.active_tracks.join(', ')}
 - Venue IDs: ${session.venue_ids.join(', ')}
 
 CRITICAL RULES:
-1. You MUST always pass vendor_id="${session.vendor_id}" when calling any tool. Never use a different vendor_id.
-2. NEVER expose PAN numbers, bank account details, GST numbers, or any KYC data.
-3. For write operations, use the appropriate propose_* tool. The action will be submitted for vendor approval. Tell the user it's pending approval.
-4. If asked for data outside your active tracks (${session.active_tracks.join(', ')}), politely decline.
+1. NEVER expose PAN numbers, bank account details, GST numbers, or any KYC data.
+2. For write operations, use the appropriate tool (extend_trial, propose_membership_update, etc.). The system will handle approval automatically — just confirm to the user their action is pending approval.
+3. If asked for data outside your active tracks (${session.active_tracks.join(', ')}), politely decline.
+4. Always format currency in Indian Rupees (₹), not dollars ($).
 5. Be concise, professional, and helpful.
 6. When showing tables, use markdown format.
 
@@ -103,26 +116,60 @@ AVAILABLE TRACKS: ${session.active_tracks.join(', ')}`;
   const tools = getToolsForSession(session);
 
   try {
-    // Create a dynamic agent with session-scoped tools
-    const agent = createAgent({
-      name: 'HobbyFi Copilot',
-      instructions: systemPrompt,
-      model: google('gemini-2.0-flash'),
-      tools: tools as Record<string, unknown>,
+    // Create a dynamic agent with session-scoped tools and conversational memory
+    const groq = createGroq({
+      apiKey: process.env.GROQ_API_KEY,
     });
 
-    const result = await agent.generate(message, { threadId: thread_id });
+    const agent = new Agent({
+      name: 'HobbyFi Copilot',
+      id: 'hobbyfi-copilot',
+      instructions: systemPrompt,
+      model: groq('llama-3.3-70b-versatile'),
+      tools: tools as Record<string, any>,
+    });
+
+    // Pass memory context so the agent remembers prior turns in this conversation.
+    // If no thread_id yet, generate one for a new conversation.
+    const conversationThreadId = thread_id ?? crypto.randomUUID();
+    
+    // Fetch conversation history from PostgreSQL
+    const historyRows = await prisma.copilot_chat_memory.findMany({
+      where: { thread_id: conversationThreadId },
+      orderBy: { created_at: 'asc' }
+    });
+    
+    const history = historyRows.map(row => ({
+      role: row.role as 'user' | 'assistant',
+      content: row.content
+    }));
+    
+    // Mastra agent.generate accepts an array of previous messages
+    const messages = [...history, { role: 'user', content: message }];
+
+    const result = await agent.generate(messages);
+
+    // Persist new messages to PostgreSQL
+    await prisma.copilot_chat_memory.createMany({
+      data: [
+        { thread_id: conversationThreadId, role: 'user', content: message },
+        { thread_id: conversationThreadId, role: 'assistant', content: result.text }
+      ]
+    });
+
 
     // Layer 3: Output guardrails
     const safeText = processOutput(result.text);
 
     res.json({
       text: safeText,
-      thread_id: thread_id || result.threadId,
+      thread_id: conversationThreadId,
     });
-  } catch (err) {
-    console.error('Chat error:', err);
-    res.status(500).json({ error: 'Failed to process chat message' });
+  } catch (err: any) {
+    console.error('Chat error type:', err?.constructor?.name);
+    console.error('Chat error message:', err?.message);
+    console.error('Chat error stack:', err?.stack);
+    res.status(500).json({ error: 'Failed to process chat message', detail: err?.message });
   }
 });
 
@@ -158,7 +205,7 @@ app.get('/api/actions/pending', sessionMiddleware, async (req: Request, res: Res
 // POST /api/actions/:log_id/approve — Approve and execute a proposed action
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/api/actions/:log_id/approve', sessionMiddleware, async (req: Request, res: Response) => {
-  const { log_id } = req.params;
+  const log_id = req.params.log_id as string;
   const session = (req as Request & { session: SessionContext }).session;
 
   try {
@@ -194,7 +241,7 @@ app.post('/api/actions/:log_id/approve', sessionMiddleware, async (req: Request,
 // POST /api/actions/:log_id/reject
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/api/actions/:log_id/reject', sessionMiddleware, async (req: Request, res: Response) => {
-  const { log_id } = req.params;
+  const log_id = req.params.log_id as string;
   const session = (req as Request & { session: SessionContext }).session;
 
   try {

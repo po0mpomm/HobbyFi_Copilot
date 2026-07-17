@@ -1,18 +1,19 @@
-import { createTool } from '@mastra/core';
+import type { SessionContext } from '../../types/session';
+import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import { prisma } from 'db';
 
-export const getPayoutSummaryTool = createTool({
+export const makeGetPayoutSummaryTool = (session: SessionContext) => createTool({
   id: 'get_payout_summary',
   description: 'Get payout summary for a vendor, optionally by venue and period.',
   inputSchema: z.object({
-    vendor_id: z.string(),
     venue_id: z.string().optional(),
     from_date: z.string().optional(),
     to_date: z.string().optional(),
   }),
-  execute: async ({ context }) => {
-    const { vendor_id, venue_id, from_date, to_date } = context;
+  execute: async (context) => {
+    const { vendor_id, staff_user_id } = session;
+    const { venue_id, from_date, to_date } = context;
 
     if (venue_id) {
       const venue = await prisma.venues.findFirst({ where: { venue_id, vendor_id } });

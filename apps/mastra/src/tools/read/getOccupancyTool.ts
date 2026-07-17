@@ -1,18 +1,19 @@
-import { createTool } from '@mastra/core';
+import type { SessionContext } from '../../types/session';
+import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import { prisma } from 'db';
 
-export const getOccupancyTool = createTool({
+export const makeGetOccupancyTool = (session: SessionContext) => createTool({
   id: 'get_occupancy',
   description: 'Get slot occupancy rates for courts/slots at a venue. Returns booked vs total slots.',
   inputSchema: z.object({
-    vendor_id: z.string(),
     venue_id: z.string().describe('Venue UUID to check occupancy for'),
     from_date: z.string().optional(),
     to_date: z.string().optional(),
   }),
-  execute: async ({ context }) => {
-    const { vendor_id, venue_id, from_date, to_date } = context;
+  execute: async (context) => {
+    const { vendor_id, staff_user_id } = session;
+    const { venue_id, from_date, to_date } = context;
 
     const venue = await prisma.venues.findFirst({ where: { venue_id, vendor_id } });
     if (!venue) return { error: 'Venue not found or does not belong to this vendor' };

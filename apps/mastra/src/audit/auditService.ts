@@ -20,7 +20,7 @@ export async function createAuditEntry(
       resolved_action_type: diff.action_type,
       target_entity_type: diff.target_entity_type,
       target_entity_id: diff.target_entity_id,
-      proposed_diff: diff as unknown as Record<string, unknown>,
+      proposed_diff: diff as any,
       requires_extra_confirmation: diff.requires_extra_confirmation ?? false,
       status: 'proposed',
     },

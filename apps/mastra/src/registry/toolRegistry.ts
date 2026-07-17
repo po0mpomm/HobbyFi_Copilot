@@ -6,58 +6,51 @@
 import { SessionContext } from '../types/session';
 
 // Read tools
-import { getVendorStatusTool } from '../tools/read/getVendorStatusTool';
-import { getRevenueTool } from '../tools/read/getRevenueTool';
-import { listBookingsTool } from '../tools/read/listBookingsTool';
-import { getOccupancyTool } from '../tools/read/getOccupancyTool';
-import { getPayoutSummaryTool } from '../tools/read/getPayoutSummaryTool';
-import { getMrrSnapshotTool } from '../tools/read/getMrrSnapshotTool';
-import { listMembershipsTool } from '../tools/read/listMembershipsTool';
-import { listTrialsTool } from '../tools/read/listTrialsTool';
-import { getCoachScheduleTool } from '../tools/read/getCoachScheduleTool';
-import { findUserTool } from '../tools/read/findUserTool';
+import { makeGetVendorStatusTool } from '../tools/read/getVendorStatusTool';
+import { makeGetRevenueTool } from '../tools/read/getRevenueTool';
+import { makeListBookingsTool } from '../tools/read/listBookingsTool';
+import { makeGetOccupancyTool } from '../tools/read/getOccupancyTool';
+import { makeGetPayoutSummaryTool } from '../tools/read/getPayoutSummaryTool';
+import { makeGetMrrSnapshotTool } from '../tools/read/getMrrSnapshotTool';
+import { makeListMembershipsTool } from '../tools/read/listMembershipsTool';
+import { makeListTrialsTool } from '../tools/read/listTrialsTool';
+import { makeGetCoachScheduleTool } from '../tools/read/getCoachScheduleTool';
+import { makeFindUserTool } from '../tools/read/findUserTool';
 
 // Write tools
-import { extendTrialTool } from '../tools/write/extendTrialTool';
-import { proposeMembershipUpdateTool } from '../tools/write/proposeMembershipUpdateTool';
-import { proposeNoShowTool } from '../tools/write/proposeNoShowTool';
-import { proposeCancelBookingTool } from '../tools/write/proposeCancelBookingTool';
-
-// Tools always available (cross-track)
-const UNIVERSAL_TOOLS = {
-  getVendorStatusTool,
-  getRevenueTool,
-  findUserTool,
-  getPayoutSummaryTool,
-  getCoachScheduleTool,
-};
-
-// Play-track specific tools
-const PLAY_TOOLS = {
-  listBookingsTool,
-  getOccupancyTool,
-  proposeNoShowTool,
-  proposeCancelBookingTool,
-};
-
-// Pass-track specific tools
-const PASS_TOOLS = {
-  listMembershipsTool,
-  listTrialsTool,
-  getMrrSnapshotTool,
-  extendTrialTool,
-  proposeMembershipUpdateTool,
-};
+import { makeExtendTrialTool } from '../tools/write/extendTrialTool';
+import { makeProposeMembershipUpdateTool } from '../tools/write/proposeMembershipUpdateTool';
+import { makeProposeNoShowTool } from '../tools/write/proposeNoShowTool';
+import { makeProposeCancelBookingTool } from '../tools/write/proposeCancelBookingTool';
 
 export function getToolsForSession(session: SessionContext) {
-  let tools: Record<string, unknown> = { ...UNIVERSAL_TOOLS };
+  let tools: Record<string, unknown> = {
+    getVendorStatusTool: makeGetVendorStatusTool(session),
+    getRevenueTool: makeGetRevenueTool(session),
+    findUserTool: makeFindUserTool(session),
+    getPayoutSummaryTool: makeGetPayoutSummaryTool(session),
+    getCoachScheduleTool: makeGetCoachScheduleTool(session),
+  };
 
   if (session.active_tracks.includes('play')) {
-    tools = { ...tools, ...PLAY_TOOLS };
+    tools = {
+      ...tools,
+      listBookingsTool: makeListBookingsTool(session),
+      getOccupancyTool: makeGetOccupancyTool(session),
+      proposeNoShowTool: makeProposeNoShowTool(session),
+      proposeCancelBookingTool: makeProposeCancelBookingTool(session),
+    };
   }
 
   if (session.active_tracks.includes('pass')) {
-    tools = { ...tools, ...PASS_TOOLS };
+    tools = {
+      ...tools,
+      listMembershipsTool: makeListMembershipsTool(session),
+      listTrialsTool: makeListTrialsTool(session),
+      getMrrSnapshotTool: makeGetMrrSnapshotTool(session),
+      extendTrialTool: makeExtendTrialTool(session),
+      proposeMembershipUpdateTool: makeProposeMembershipUpdateTool(session),
+    };
   }
 
   return tools;

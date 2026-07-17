@@ -1,18 +1,19 @@
-import { createTool } from '@mastra/core';
+import type { SessionContext } from '../../types/session';
+import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import { prisma } from 'db';
 
-export const getMrrSnapshotTool = createTool({
+export const makeGetMrrSnapshotTool = (session: SessionContext) => createTool({
   id: 'get_mrr_snapshot',
   description: 'Get Monthly Recurring Revenue (MRR) snapshot and active member count for the vendor.',
   inputSchema: z.object({
-    vendor_id: z.string(),
     venue_id: z.string().optional(),
     from_date: z.string().optional(),
     to_date: z.string().optional(),
   }),
-  execute: async ({ context }) => {
-    const { vendor_id, venue_id, from_date, to_date } = context;
+  execute: async (context) => {
+    const { vendor_id, staff_user_id } = session;
+    const { venue_id, from_date, to_date } = context;
 
     if (venue_id) {
       const venue = await prisma.venues.findFirst({ where: { venue_id, vendor_id } });

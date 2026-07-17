@@ -1,18 +1,19 @@
-import { createTool } from '@mastra/core';
+import type { SessionContext } from '../../types/session';
+import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import { prisma } from 'db';
 
-export const listMembershipsTool = createTool({
+export const makeListMembershipsTool = (session: SessionContext) => createTool({
   id: 'list_memberships',
   description: 'List memberships for the vendor, filterable by status and plan.',
   inputSchema: z.object({
-    vendor_id: z.string(),
     venue_id: z.string().optional(),
     status: z.enum(['active', 'expired', 'cancelled']).optional(),
     limit: z.number().default(20),
   }),
-  execute: async ({ context }) => {
-    const { vendor_id, venue_id, status, limit } = context;
+  execute: async (context) => {
+    const { vendor_id, staff_user_id } = session;
+    const { venue_id, status, limit } = context;
 
     const vendorVenues = await prisma.venues.findMany({ where: { vendor_id }, select: { venue_id: true } });
     const vendorVenueIds = vendorVenues.map(v => v.venue_id);

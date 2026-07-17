@@ -1,19 +1,20 @@
-import { createTool } from '@mastra/core';
+import type { SessionContext } from '../../types/session';
+import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import { prisma } from 'db';
 
-export const listTrialsTool = createTool({
+export const makeListTrialsTool = (session: SessionContext) => createTool({
   id: 'list_trials',
   description: 'List trials for the vendor. Use expiring_within_days to find trials expiring soon.',
   inputSchema: z.object({
-    vendor_id: z.string(),
     venue_id: z.string().optional(),
     status: z.enum(['active', 'expired', 'converted', 'no_show']).optional(),
     expiring_within_days: z.number().optional().describe('Show only trials expiring within N days from today'),
     limit: z.number().default(20),
   }),
-  execute: async ({ context }) => {
-    const { vendor_id, venue_id, status, expiring_within_days, limit } = context;
+  execute: async (context) => {
+    const { vendor_id, staff_user_id } = session;
+    const { venue_id, status, expiring_within_days, limit } = context;
 
     const vendorVenues = await prisma.venues.findMany({ where: { vendor_id }, select: { venue_id: true } });
     const vendorVenueIds = vendorVenues.map(v => v.venue_id);

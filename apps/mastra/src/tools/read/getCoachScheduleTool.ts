@@ -1,17 +1,18 @@
-import { createTool } from '@mastra/core';
+import type { SessionContext } from '../../types/session';
+import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import { prisma } from 'db';
 
-export const getCoachScheduleTool = createTool({
+export const makeGetCoachScheduleTool = (session: SessionContext) => createTool({
   id: 'get_coach_schedule',
   description: 'Get coach/staff schedule and assigned classes for the vendor.',
   inputSchema: z.object({
-    vendor_id: z.string(),
     venue_id: z.string().optional(),
     role: z.enum(['coach', 'front_desk', 'manager']).optional(),
   }),
-  execute: async ({ context }) => {
-    const { vendor_id, venue_id, role } = context;
+  execute: async (context) => {
+    const { vendor_id, staff_user_id } = session;
+    const { venue_id, role } = context;
 
     if (venue_id) {
       const venue = await prisma.venues.findFirst({ where: { venue_id, vendor_id } });
